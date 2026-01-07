@@ -1,0 +1,2286 @@
+---
+title: "2024 NH3-loss Statistical Models, cube root"
+author: "Maarit Mäenpää + NJH"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  word_document:
+    reference_docx: landscape.docx
+  pdf_document: default
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r data, include=FALSE}
+
+# Packages
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(lme4)
+library(lmerTest)
+library(MuMIn)
+library(emmeans)
+library(interactions)
+library(ggpubr)
+library(car)
+library(glmmTMB)
+library(DHARMa)
+library(tidyverse)
+
+#
+#
+#
+
+# Data
+load(here::here("data/Wrangled/NH3predict.Rda"))
+
+# Remove potential NAs from base-model variables
+NH3predict <- NH3predict %>% drop_na(c(Fertiliser, Application, Method))
+NH3predict <- NH3predict[which(is.na(NH3predict$NH3loss)==FALSE &
+                                 is.na(NH3predict$Fertiliser)==FALSE & 
+                                 is.na(NH3predict$Application)==FALSE &
+                                 is.na(NH3predict$Method)==FALSE &
+                                 is.na(NH3predict$Place)==FALSE &
+                                 is.na(NH3predict$Ref)==FALSE),]
+
+# Removing a study with large negative values for NH3loss
+NH3predict <- NH3predict[which(NH3predict$Ref!="Velthof et al. 1990"),]
+
+#
+#
+# 
+
+## DEFINING VARIABLES
+
+
+# Defining class of vectors in the analysis
+
+#
+# Model A_Base
+
+NH3predict$Fertiliser <- factor(NH3predict$Fertiliser)
+NH3predict$Place <- factor(NH3predict$Place)
+NH3predict$Method <- factor(NH3predict$Method)
+NH3predict$Application <- factor(NH3predict$Application)
+NH3predict$Ref <- factor(NH3predict$Ref)
+
+#
+# Model A_Application rate
+NH3predict$Application.rate <- as.numeric(NH3predict$Application.rate)
+
+#
+# Model A_Soil pH
+NH3predict$SoilpH <- as.numeric(NH3predict$SoilpH)
+summary(NH3predict$SoilpH)
+NH3predict[which(NH3predict$SoilpH>10),]
+
+# pH categorisation
+NH3predict$pH_cat <- factor(ifelse(NH3predict$SoilpH<=7, "normal", "chalky"))
+ddply(NH3predict, c("pH_cat"), summarise, N=length(NH3loss))
+
+ggplot(NH3predict, aes(x=SoilpH, fill=pH_cat)) + geom_histogram(binwidth=0.1, alpha=.5, position="identity")
+
+# Model A_Clay
+NH3predict$Clay <- as.numeric(as.character(NH3predict$Clay))
+
+#
+# Model A_SOC
+NH3predict$SOC <- as.numeric(as.character(NH3predict$SOC))
+##correct typo
+NH3predict[1481,25]<-38.1
+# SOC categorisation 
+# Organic soils: >30% organic matter
+# >12% SOC
+NH3predict$SOC_cat <- factor(ifelse(NH3predict$SOC>=12, "organic", "mineral"))
+ggplot(NH3predict, aes(x=SOC, fill=SOC_cat)) + geom_histogram(binwidth=0.1, alpha=.5, position="identity")
+ggplot(NH3predict, aes(x=SOC, fill=SOC_cat)) + geom_density(alpha=.3)
+
+#
+# Model A_Cover
+NH3predict$Crop <- factor(NH3predict$Crop)
+# Cover crop categorisation
+NH3predict$Cover <- NH3predict$Crop
+levels(NH3predict$Cover)[levels(NH3predict$Cover)=="alfalfa"] <- "Arable" 
+levels(NH3predict$Cover)[levels(NH3predict$Cover)=="cereal"] <- "Arable"
+levels(NH3predict$Cover)[levels(NH3predict$Cover)=="grass"] <- "Grass"
+levels(NH3predict$Cover)[levels(NH3predict$Cover)=="beans"] <- "Arable"
+levels(NH3predict$Cover)[levels(NH3predict$Cover)=="maize"] <- "Arable"
+levels(NH3predict$Cover)[levels(NH3predict$Cover)=="none"] <- "None"
+levels(NH3predict$Cover)[levels(NH3predict$Cover)=="other"] <- "Other"
+levels(NH3predict$Cover)[levels(NH3predict$Cover)=="trees"] <- "Other"
+summary(NH3predict$Cover)
+
+#
+# Model A_Air temperature and rainfall
+NH3predict$Rainfall <- as.numeric(as.character(NH3predict$Rainfall))
+NH3predict$AirTemperature <- as.numeric(as.character(NH3predict$AirTemperature))
+NH3predict$Duration <- as.numeric(as.character(NH3predict$Duration))
+NH3predict$Rain.mean <- NH3predict$Rainfall/NH3predict$Duration
+
+# Model A_Irrigation
+# Binarising irrigation
+NH3predict$irrigation_cat <- factor(ifelse(NH3predict$irrigation=="0", 0, 1))
+
+# Model A_WaterPerDay
+NH3predict$WaterPerDay <- as.numeric(as.character(NH3predict$WaterPerDay))
+
+#
+#
+# Reordering factor levels
+
+NH3predict$Fertiliser <- factor(NH3predict$Fertiliser, levels = c("urea+", "UAN", "ammonium+1", "ammonium+2"))
+NH3predict$Method <- relevel(NH3predict$Method, "Micromet")
+NH3predict$Application <- relevel(NH3predict$Application, "Broadcast") 
+NH3predict$Place <- relevel(NH3predict$Place, "Outdoor") 
+NH3predict$pH_cat <- relevel(NH3predict$pH_cat, "normal") 
+
+# Model response variable
+NH3predict$NH3loss <- as.numeric(as.character(NH3predict$NH3loss))
+```
+
+## Model A_base
+
+To reduce the number of parameters in the statistical model, we categorised different fertilisers into categories consisting of;
+
+**Urea**: Fertilisers where the main component was urea
+
+**UAN**: UAN
+
+**ammonium+1**: Fertilisers including a low percentage of ammonium
+
+**ammonium+2**: Fertilisers with higher percentage of ammonium
+
+The table below depicts the categorisation of fertilisers, and the number of observations in each sub-category.
+
+```{r Fertiliser, include=TRUE, echo=FALSE}
+grouped<-NH3predict[which(NH3predict$Application=="Broadcast" | NH3predict$Application=="Liquid"),]
+
+ddply(NH3predict, c("Fertiliser", "Fertiliser"), summarise, N=length(NH3loss))
+
+```
+
+In Model A_Base, we examined the effects of application method (Application), measurement method (Method), and location of study (Place) on NH3 emissions. The tables below show the number of observations within each category examined.
+
+```{r include=TRUE, echo=FALSE}
+ddply(NH3predict, c("Application"), summarise, N=length(NH3loss))
+
+ddply(NH3predict, c("Method"), summarise, N=length(NH3loss))
+
+ddply(NH3predict, c("Place"), summarise, N=length(NH3loss))
+
+```
+
+Table below shows counts of all categories of variables:
+
+```{r include=TRUE, echo=FALSE}
+table( NH3predict$Method, NH3predict$Place)
+
+table(NH3predict$Application,  NH3predict$Place)
+
+table(NH3predict$Cover,  NH3predict$Place)
+
+table(NH3predict$Fertiliser, NH3predict$Application, NH3predict$Method, NH3predict$Place)
+
+```
+
+We analysed the effects of Fertiliser types (Urea, UAN, ammonium+1, and ammonium+2), Application method (Broadcast, Liquid, Incorporated, and Injected), the measurement method (Micromet, 15N, Closed chamber, Drager-Tube, Semi-open, Ventilated chambers, and Windtunnel), and whether the study was conducted in the field or in the laboratory, using a general linear mixed effects model (lmer, R-package lme4, Bates et al. 2015). Because the observations originated from different studies, each study most often contributing more than one observation, the reference for study was used as a random effect, to account for non-independence due to repeated measurements.
+
+We used NH3-loss (%), calculated as relative difference between ammonia emissions from a test site and a control site proportional to the control, as a response variable. There were `r length(NH3predict[which(NH3predict$NH3loss<0),]$NH3loss)` negative observations out of the total `r length(NH3predict$NH3loss)`.
+
+The frequency distribution of the untransformed NH3-loss measurements is shown below.
+
+```{r include=TRUE, echo=FALSE}
+
+hist(NH3predict$NH3loss, breaks=50)
+
+```
+
+To account for non-normality, the response variable was transformed with a signed cube root transformation. We applied a constant of 4 to allow the analysis to include negative values.
+
+To account for heteroscedasticity, we used weighted ordinary least squares (WOLS, Olvera Astivia & Bruno 2019). We built a vector giving larger weight to observations with smaller variation. To this end, we extracted absolute residuals and fitted values from an unweighted version of Model A_Base (see below for code). We then applied a regression model between the absolute residuals (response variable and fitted values (predictor variable), to estimate the relationship between the amount of variation and the data and the model estimates. To attain a vector with higher values attached to lower variation, we used the inverse of the relationship estimated in the regression model. The weights correspond to increased weight with decrease in variation, thus giving more precedence to more accurate data.
+
+The R-code for the acquiring the weights, and the final model is shown below.
+
+```{r, include=TRUE, echo=FALSE}
+## MODEL A_Base
+
+# Model for calculating weights
+model <- lmer(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Fertiliser + Application + Method + Place + (1|Ref),
+              control=lmerControl(optimizer="bobyqa"),
+              data=NH3predict)
+
+# Calculating weights
+NH3predict$Weight <- 1/lm(abs(resid(model)) ~ fitted(model))$fitted.values^2
+
+# Model A_Base 
+m1_lmer_p1 <- lmer(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Fertiliser + Application + Method + Place + (1|Ref),
+                   weights=Weight,
+                   control=lmerControl(optimizer="bobyqa"),
+                   data=NH3predict)
+
+```
+
+The model assumptions are checked in the figures below:
+
+```{r include=TRUE, echo=FALSE}
+#
+# Model assumptions
+par(mfrow=c(1,3))
+plot(fitted(m1_lmer_p1), NH3predict$Weight*resid(m1_lmer_p1)) 
+abline(h=0) # OK
+qqnorm(resid(m1_lmer_p1))
+qqline(resid(m1_lmer_p1)) 
+hist(resid(m1_lmer_p1)) 
+par(mfrow=c(1,1))
+
+
+```
+
+NH3-loss was different for different fertilisers (F(`r round(anova(m1_lmer_p1)$NumDF[1], 0)`, `r round(anova(m1_lmer_p1)$DenDF[1],0)`) =`r round(anova(m1_lmer_p1)$F[1], 2)`, p `r ifelse(round(anova(m1_lmer_p1)[[6]][1], 3)=="0", "<0.001", paste("=",round(anova(m1_lmer_p1)[[6]][1], 3)))`), as were the emissions from different application methods (F(`r round(anova(m1_lmer_p1)$NumDF[2], 0)`, `r round(anova(m1_lmer_p1)$DenDF[2],0)`) =`r round(anova(m1_lmer_p1)$F[2], 2)`, p `r ifelse(round(anova(m1_lmer_p1)[[6]][2], 3)=="0", "<0.001", paste("=",round(anova(m1_lmer_p1)[[6]][2], 3)))`). Laboratory measurements were significantly different from the measurements taken from the field (F(`r round(anova(m1_lmer_p1)$NumDF[4], 0)`, `r round(anova(m1_lmer_p1)$DenDF[4],0)`) =`r round(anova(m1_lmer_p1)$F[4], 2)`, p `r ifelse(round(anova(m1_lmer_p1)[[6]][4], 3)=="0", "<0.001", paste("=",round(anova(m1_lmer_p1)[[6]][4], 3)))`). Overall, the measurement method did not explain variation in NH3 emissions (F(`r round(anova(m1_lmer_p1)$NumDF[3], 0)`, `r round(anova(m1_lmer_p1)$DenDF[3],0)`) =`r round(anova(m1_lmer_p1)$F[3], 2)`, p `r ifelse(round(anova(m1_lmer_p1)[[6]][3], 3)=="0", "<0.001", paste("=",round(anova(m1_lmer_p1)[[6]][3], 3)))`).
+
+```{r, include=FALSE, echo=FALSE}
+
+anova(m1_lmer_p1)
+
+```
+
+The pairwise-comparisons of factor-level effects can be seen below. The comparisons are made to urea (in Fertiliser), Broadcast (in Application), Micromet (in Method), and Outdoor (in Place). The estimates are given in the cube root -scale.
+
+\small
+
+```{r include=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Results
+summary(m1_lmer_p1)
+
+```
+
+\normalsize
+
+The effect sizes (marginal means) for each category of each factor are presented below, parametrised to urea (in Fertiliser), Broadcast (in Application), Micromet (in Method), and Outdoor (in Place). The effect sizes are given at the back-transformed scale (NH3-loss %).
+
+\small
+
+```{r include=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+
+#
+##### 
+# Estimates for each main effect
+
+# Inverse function
+inv_signed_cube_root <- function(y) sign(y) * abs(y)^3
+
+#
+# Fertiliser
+
+# Effect sizes
+at <- list("Application"="Broadcast", "Method"="Micromet", "Place"="Outdoor")
+m1_est_F <- emmeans(m1_lmer_p1, ~ Fertiliser, at=at)
+m1_est_F  <- data.frame(m1_est_F) 
+
+m1_est_F$emmean <- as.numeric(as.character(m1_est_F$emmean))
+m1_est_F$emmean <- inv_signed_cube_root(m1_est_F$emmean)
+m1_est_F$lower.CL <- inv_signed_cube_root(m1_est_F$lower.CL)
+m1_est_F$upper.CL <- inv_signed_cube_root(m1_est_F$upper.CL)
+
+#
+# Application
+
+# Effect sizes
+at <- list("Fertiliser"="urea+", "Method"="Micromet", "Place"="Outdoor")
+m1_est_A <- emmeans(m1_lmer_p1, ~ Application, at=at)
+m1_est_A <- data.frame(m1_est_A)
+
+m1_est_A$emmean <- as.numeric(as.character(m1_est_A$emmean))
+m1_est_A$emmean <- inv_signed_cube_root(m1_est_A$emmean)
+m1_est_A$lower.CL <- inv_signed_cube_root(m1_est_A$lower.CL)
+m1_est_A$upper.CL <- inv_signed_cube_root(m1_est_A$upper.CL)
+
+#
+# Method
+
+# Effect sizes
+at <- list("Fertiliser"="urea+", "Application"="Broadcast", "Place"="Outdoor")
+m1_est_M <- emmeans(m1_lmer_p1, ~ Method, at=at)
+m1_est_M <- data.frame(m1_est_M)
+
+m1_est_M$emmean <- as.numeric(as.character(m1_est_M$emmean))
+m1_est_M$emmean <- inv_signed_cube_root(m1_est_M$emmean)
+m1_est_M$lower.CL <- inv_signed_cube_root(m1_est_M$lower.CL)
+m1_est_M$upper.CL <- inv_signed_cube_root(m1_est_M$upper.CL)
+
+#
+# Place
+
+# Effect size
+at <- list("Fertiliser"="urea+", "Application"="Broadcast", "Method"="Micromet")
+m1_est_P <- emmeans(m1_lmer_p1, ~ Place, at=at)
+m1_est_P <- data.frame(m1_est_P)
+
+m1_est_P$emmean <- as.numeric(as.character(m1_est_P$emmean))
+m1_est_P$emmean <- inv_signed_cube_root(m1_est_P$emmean)
+m1_est_P$lower.CL <- inv_signed_cube_root(m1_est_P$lower.CL)
+m1_est_P$upper.CL <- inv_signed_cube_root(m1_est_P$upper.CL)
+
+#
+
+## 
+# Collating a dataframe with all effect sizes
+
+# Vectors for emmeans-objects and fectors
+Model_vec <- c("m1_est_F", "m1_est_A", "m1_est_M", "m1_est_P")
+Factor_vec <- c("Fertiliser","Application", "Method", "Place")
+
+# Creating an empty dataframe
+m1_estimates <- data.frame(Factor=factor(), Level=factor(), Effect=numeric(), SE=numeric(), df=numeric(), lower.CL=numeric(), upper.CL=numeric())
+
+# Loop for extracting all estimates
+for(i in c(1:4)){ # Cycling through models
+  m_est <- data.frame(get(Model_vec[i]))
+  m1_estimates <- rbind(m1_estimates, data.frame(Factor=Factor_vec[i],
+                                                 Level=m_est[,1],
+                                                 Effect=m_est[,2],
+                                                 SE=m_est[,3],
+                                                 df=m_est[,4],
+                                                 lower.CL=m_est[,5],
+                                                 upper.CL=m_est[,6]))
+}
+m1_estimates
+
+
+```
+
+The same effect sizes (and their 95% confidence interval) are shown below:
+
+```{r echo=FALSE, include=TRUE, warning=FALSE, message=FALSE}
+# Full figure 
+ggplot(m1_estimates, aes(y=Level, x=Effect, xmin=lower.CL, xmax=upper.CL, colour=Factor)) +
+  theme_classic(base_size = 11) +
+  facet_grid(Factor ~ ., scales = "free_y", space = "free_y") +
+  geom_point(size=3) + 
+  geom_errorbarh(height=.1)  +
+  geom_vline(xintercept=0, colour="black", linetype="dashed") +
+  scale_colour_manual(values=c("firebrick3", "yellow4", "mediumblue", "palegreen4")) +
+  #scale_color_brewer(palette = "Dark2") +
+  labs(x="Effect Size (NH3 loss (%))", y="") +
+  theme(legend.position = "none")
+```
+
+\normalsize
+
+Model A_Base explains `r round(r.squaredGLMM(m1_lmer_p1)[2]*100, 2)` % of the variation in the data (conditional R2), with the fixed effects explaining `r round(r.squaredGLMM(m1_lmer_p1)[1]*100, 2)` % (marginal R2). The R2-values for linear mixed effects model were calculated according to Nagakawa & Schielzeth (2013).
+
+```{r include=FALSE, echo=FALSE}
+
+##
+# Model explanatory power
+#
+
+#
+# R-squared
+r.squaredGLMM(m1_lmer_p1)
+
+
+#
+#
+# 
+
+# Save fitted values for future models
+NH3predict$M1_fit <- fitted(m1_lmer_p1)
+NH3predict$M1_res <- resid(m1_lmer_p1) # For R2-calculations
+```
+
+\newpage
+
+## Model A_Application rate
+
+In model A_Application rate, as in all models following, we applied a linear model using fitted values from Model A_Base as an offset variable, to account for the variation explained by the factors already estimated in Model A_Base. As in Model A_Base, we transformed the response variable (NH3-loss %) with a squareroot-transformation with a constant of 4. The model was also weighted the analysis with the same weights as Model 1 to account for heteroscedasticity. This same structure was used in all following models.
+
+The sole explanatory variable in Model A_Application rate was application rate (kg/ha).
+
+```{r echo=FALSE, include=FALSE}
+
+#########################################################################################################################################################
+## MODEL A_Application rate
+
+# 
+# 
+NH3predict_m2 <- filter(NH3predict, is.na(Application.rate)==F)
+
+#
+#
+```
+
+```{r include=TRUE, echo=FALSE}
+hist(NH3predict_m2$Application.rate, breaks=50)
+
+```
+
+The model as it was applied can be seen below:
+
+```{r include=TRUE, echo=TRUE}
+# Model  
+m2_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Application.rate + offset(M1_fit),
+            weights=Weight,
+            data=NH3predict_m2)
+```
+
+The model assumptions can be seen below:
+
+```{r include=TRUE, echo=FALSE}
+# Model assumptions
+par(mfrow=c(1,3))
+plot(fitted(m2_lm), NH3predict_m2$Weight*resid(m2_lm))
+abline(h=0)
+qqnorm(resid(m2_lm))
+qqline(resid(m2_lm))
+hist(resid(m2_lm))
+par(mfrow=c(1,1))
+```
+
+Application rate did not significantly explain variation in NH3-emissions (F(`r anova(m2_lm)$Df[1]`, `r anova(m2_lm)$Df[2]`) =`r round(anova(m2_lm)$F[1], 2)`, p `r ifelse(round(anova(m2_lm)$P[1], 3)=="0", "<0.001", paste("=",round(anova(m2_lm)$P[1], 3)))`). There was a statistically non-significant positive trend between Application rate and NH3-emissions ($\beta$+/-SE = `r round(coef(m2_lm)[[2]],5)` +/- `r round(summary(m2_lm)$coef[2,2],5)`).
+
+Full model output can be seen below:
+
+```{r, include=TRUE, echo=FALSE}
+# Results
+summary(m2_lm)
+
+# Save fitted values for plotting
+NH3predict_m2$M2_fits <- fitted(m2_lm)
+
+```
+
+```{r include=FALSE, echo=FALSE}
+
+# Extracting correct R2-measure (including the effect of offset)
+
+m2_lm_res <- lm(M1_res ~ Application.rate,
+            weights=Weight,
+            data=NH3predict_m2)
+
+# Adjusted R2
+round(summary(m2_lm_res)$adj.r.squared*100, 2)
+
+```
+
+Application rate explains `r round(summary(m2_lm_res)$adj.r.squared*100, 2)` % of residual variation in NH3-emissions (adjusted R-squared). (Note: Adjusted R-squared is manually adjusted to incorporate the offset-variable, and thus not consistent with the adjusted R-squared from the above model output.)
+
+Figure below is a linear approximation of the effect of Application rate on NH3-emissions (linear slope back-transformed from the square-root scale).
+
+```{r include=TRUE, echo=FALSE, message=FALSE}
+#
+#
+#
+
+# Model figure
+
+# Inverse function
+inv_signed_cube_root <- function(y) sign(y) * abs(y)^3
+
+
+
+ggplot(NH3predict_m2, aes(y=NH3loss, x=Application.rate)) + 
+  theme_classic(base_size = 11) +
+  geom_point(position=position_jitter(1), colour="gray75") +
+  geom_smooth(aes(y=(sign(M2_fits)*abs(M2_fits)^3)), method='lm', se=T, colour="black") +
+  labs(x="Application rate (kg/ha)", y = "NH3 loss (%)") 
+
+#
+#
+# 
+```
+
+\newpage
+
+## Model A_Soil pH
+
+```{r include=FALSE, echo=FALSE}
+
+#########################################################################################################################################################
+## MODEL A_Soil pH
+
+#
+#
+# Remove NA's from the dataset - n=1894
+NH3predict_m3 <- NH3predict %>% drop_na(SoilpH)
+# NH3predict_m3<-NH3predict_m3 %>%  mutate(pHgroup = case_when(SoilpH < 6.0 ~ 'low',
+#                            SoilpH >=6.0 & SoilpH<7.0 ~ 'norm',
+#                            SoilpH >=7.0 & SoilpH <8.0 ~ 'high',
+#                            SoilpH >8.0 ~ 'very_high'))
+# NH3predict_m3$pHgroup<-factor(NH3predict_m3$pHgroup)
+
+```
+
+Soil pH was binarised into categories, where soils with pH\>7.0 were categorised as chalky, and ph\<=7.0 as normal. The number of observations in each group and their frequency distribution can be seen below.
+
+```{r include=TRUE, echo=FALSE}
+
+ddply(NH3predict_m3, c("pH_cat"), summarise, N=length(NH3loss))
+ggplot(NH3predict_m3, aes(x=SoilpH, fill=pH_cat)) + 
+  theme_classic(base_size=11) + 
+  geom_histogram(binwidth=0.1, alpha=.5, position="identity")
+
+```
+
+Model A_Soil pH followed the structure of Model A_Application rate. We added Soil pH, Fertiliser type, and the interaction between the two as fixed factors. In this model, Fertiliser types were used to identify differences between pH-categories, not to analyse the effect of Fertiliser on its own - the offset of Model A_Base removes the variation explained by Fertilisers otherwise.
+
+```{r include=TRUE, echo=TRUE}
+
+# Model
+m3_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Fertiliser * pH_cat + offset(M1_fit), 
+            weights=Weight,
+            data=NH3predict_m3)
+
+```
+
+The heteroscedasticity and normality of errors were as below:
+
+```{r include=TRUE, echo=FALSE}
+
+# Model assumptions
+par(mfrow=c(1,3))
+plot(fitted(m3_lm), NH3predict_m3$Weight*resid(m3_lm))
+abline(h=0)
+qqnorm(resid(m3_lm))
+qqline(resid(m3_lm))
+hist(resid(m3_lm))
+par(mfrow=c(1,1))
+
+```
+
+The effect of soil pH on NH3-emissions was dependent on the Fertiliser types (F(`r anova(m3_lm)$Df[3]`, `r anova(m3_lm)$Df[4]`) =`r round(anova(m3_lm)$F[3], 2)`, p `r ifelse(round(anova(m3_lm)$P[3], 3)=="0", "<0.001", paste("=",round(anova(m3_lm)$P[3], 3)))`). Soil pH also had an independent effect on NH3 emissions (F(`r anova(m3_lm)$Df[2]`, `r anova(m3_lm)$Df[4]`) =`r round(anova(m3_lm)$F[2], 2)`, p `r ifelse(round(anova(m3_lm)$P[2], 3)=="0", "<0.001", paste("=",round(anova(m3_lm)$P[2], 3)))`).
+
+Full anova-table can be seen below:
+
+```{r include=TRUE, echo=FALSE}
+
+anova(m3_lm)
+
+```
+
+Full model output can be seen below:
+
+```{r include=TRUE, echo=FALSE}
+# Results
+summary(m3_lm)
+
+# Save fitted values for plotting
+NH3predict_m3$pH_fits <- fitted(m3_lm)
+
+
+```
+
+```{r include=TRUE, echo=FALSE}
+
+# Extracting correct R2-measure (including the effect of offset)
+
+m3_lm_res <- lm(M1_res ~ -1 + Fertiliser:pH_cat, 
+                weights=Weight,
+            data=NH3predict_m3)
+
+
+```
+
+The model explained `r round(summary(m3_lm_res)$adj.r.squared*100, 2)` % of the residual variation in NH3-loss.
+
+### Combining A_Base and A_Soil pH
+
+For acquiring estimates for Soil pH in different fertiliser types at the same time, and same scale as the base-model, we added Soil pH and the interaction between pH and FertiliserType into the initial model. Please note this model has less data than Model A_Base, and as it includes new parameters, the estimates change slightly.
+
+```{r include=FALSE, echo=TRUE}
+
+m3_lmer <- lmer(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Fertiliser + Application + Method + Place + pH_cat + Fertiliser:pH_cat + (1|Ref),
+                   weights=Weight,
+                   control=lmerControl(optimizer="bobyqa"),
+                   data=NH3predict)
+summary(m3_lmer)
+
+#
+# R-squared
+r.squaredGLMM(m3_lmer)
+
+```
+
+The effect sizes (marginal means) for the interaction can be seen below. The effect sizes are given at the back-transformed scale (NH3-loss %), parametrised to Fertiliser=urea+, Application=Broadcast, Method=Micromet, Place=outdoor, pH=normal.
+
+```{r include=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+#
+##### 
+# Estimates for each main effect
+
+# Inverse function
+inv_signed_cube_root <- function(y) sign(y) * abs(y)^3
+
+#
+# Fertiliser
+
+# Effect sizes
+at <- list("Application"="Broadcast", "Method"="Micromet", "Place"="Outdoor")
+m3_est_F <- emmeans(m3_lmer, ~ Fertiliser, at=at)
+m3_est_F  <- data.frame(m3_est_F) 
+
+m3_est_F$emmean <- as.numeric(as.character(m3_est_F$emmean))
+m3_est_F$emmean <- inv_signed_cube_root(m3_est_F$emmean)
+m3_est_F$lower.CL <- inv_signed_cube_root(m3_est_F$lower.CL)
+m3_est_F$upper.CL <- inv_signed_cube_root(m3_est_F$upper.CL)
+
+#
+# Application
+
+# Effect sizes
+at <- list("Fertiliser"="urea+", "Method"="Micromet", "Place"="Outdoor")
+m3_est_A <- emmeans(m3_lmer, ~ Application, at=at)
+m3_est_A <- data.frame(m3_est_A)
+
+m3_est_A$emmean <- as.numeric(as.character(m3_est_A$emmean))
+m3_est_A$emmean <- inv_signed_cube_root(m3_est_A$emmean)
+m3_est_A$lower.CL <- inv_signed_cube_root(m3_est_A$lower.CL)
+m3_est_A$upper.CL <- inv_signed_cube_root(m3_est_A$upper.CL)
+
+#
+# Method
+
+# Effect sizes
+at <- list("Fertiliser"="urea+", "Application"="Broadcast", "Place"="Outdoor")
+m3_est_M <- emmeans(m3_lmer, ~ Method, at=at)
+m3_est_M <- data.frame(m3_est_M)
+
+m3_est_M$emmean <- as.numeric(as.character(m3_est_M$emmean))
+m3_est_M$emmean <- inv_signed_cube_root(m3_est_M$emmean)
+m3_est_M$lower.CL <- inv_signed_cube_root(m3_est_M$lower.CL)
+m3_est_M$upper.CL <- inv_signed_cube_root(m3_est_M$upper.CL)
+
+#
+# Place
+
+# Effect size
+at <- list("Fertiliser"="urea+", "Application"="Broadcast", "Method"="Micromet")
+m3_est_P <- emmeans(m3_lmer, ~ Place, at=at)
+m3_est_P <- data.frame(m3_est_P)
+
+m3_est_P$emmean <- as.numeric(as.character(m3_est_P$emmean))
+m3_est_P$emmean <- inv_signed_cube_root(m3_est_P$emmean)
+m3_est_P$lower.CL <- inv_signed_cube_root(m3_est_P$lower.CL)
+m3_est_P$upper.CL <- inv_signed_cube_root(m3_est_P$upper.CL)
+
+#
+# Soil pH
+
+# Effect size
+at <- list("Fertiliser"="urea+", "Application"="Broadcast", "Method"="Micromet", "Place"="Outdoor")
+m3_est_pH <- emmeans(m3_lmer, ~ pH_cat, at=at)
+m3_est_pH <- data.frame(m3_est_pH)
+
+m3_est_pH$emmean <- as.numeric(as.character(m3_est_pH$emmean))
+m3_est_pH$emmean <- inv_signed_cube_root(m3_est_pH$emmean)
+m3_est_pH$lower.CL <- inv_signed_cube_root(m3_est_pH$lower.CL)
+m3_est_pH$upper.CL <- inv_signed_cube_root(m3_est_pH$upper.CL)
+
+#
+# Interaction
+
+# Effect size
+at <- list("Application"="Broadcast", "Method"="Micromet", "Place"="Outdoor")
+m3_est_pHFe <- emmeans(m3_lmer, pairwise ~ pH_cat | Fertiliser, at=at)
+m3_est_pHFe <- data.frame(m3_est_pHFe)
+
+m3_est_pHFe$emmean <- as.numeric(as.character(m3_est_pHFe$emmean))
+m3_est_pHFe$emmean <- inv_signed_cube_root(m3_est_pHFe$emmean)
+m3_est_pHFe$lower.CL <- inv_signed_cube_root(m3_est_pHFe$lower.CL)
+m3_est_pHFe$upper.CL <- inv_signed_cube_root(m3_est_pHFe$upper.CL)
+
+
+#
+
+## 
+# Collating a dataframe with all effect sizes
+
+# Vectors for emmeans-objects and fectors
+Model_vec <- c("m3_est_F", "m3_est_A", "m3_est_M", "m3_est_P", "m3_est_pH")
+Factor_vec <- c("Fertiliser", "Application", "Method", "Place", "Soil pH")
+
+# Creating an empty dataframe
+m3_estimates <- data.frame(Factor=factor(), Level=factor(), Effect=numeric(), SE=numeric(), df=numeric(), lower.CL=numeric(), upper.CL=numeric())
+
+# Loop for extracting all estimates
+for(i in c(1:5)){ # Cycling through models
+  m_est <- data.frame(get(Model_vec[i]))
+  m3_estimates <- rbind(m3_estimates, data.frame(Factor=Factor_vec[i],
+                                                 Level=m_est[,1],
+                                                 Effect=m_est[,2],
+                                                 SE=m_est[,3],
+                                                 df=m_est[,4],
+                                                 lower.CL=m_est[,5],
+                                                 upper.CL=m_est[,6]))
+}
+
+
+m3_est_pHFe$Level <- paste(m3_est_pHFe$Fertiliser, ":", m3_est_pHFe$pH_cat)
+
+
+# Add the interaction
+m3_estimates <- rbind(m3_estimates,
+                      data.frame(Factor="Fertiliser:Soil pH",
+                                 Level=filter(m3_est_pHFe, contrast==".")$Level,
+                                 Effect=filter(m3_est_pHFe, contrast==".")$emmean,
+                                 SE=filter(m3_est_pHFe, contrast==".")$SE,
+                                 df=filter(m3_est_pHFe, contrast==".")$df,
+                                 lower.CL=filter(m3_est_pHFe, contrast==".")$lower.CL,
+                                 upper.CL=filter(m3_est_pHFe, contrast==".")$upper.CL))
+
+m3_estimates
+
+
+```
+
+The same effect sizes (and their 95% confidence interval) are shown below:
+
+```{r include=TRUE, echo=FALSE}
+
+# Figure
+ggplot(m3_estimates, aes(y=Level, x=Effect, xmin=lower.CL, xmax=upper.CL, colour=Factor)) +
+  theme(strip.text.y = element_text(size = 6)) +
+  facet_grid(Factor ~ ., scales = "free_y", space = "free_y") +
+  geom_point(size=3) + 
+  geom_errorbarh(height=.1)  +
+  geom_vline(xintercept=0, colour="black", linetype="dashed") +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x="Effect Size (NH3 loss (%))", y="") +
+  theme(legend.position = "none")
+
+ 
+```
+
+\newpage
+
+## Model A_Soil clay content
+
+In Model A_Soil clay content, we explored the effect of Soil clay content (%) on NH3-loss (%).
+
+```{r include=FALSE, echo=FALSE}
+
+#########################################################################################################################################################
+## MODEL A_Soil clay content
+
+#
+#
+# Remove NA's from the dataset - n=1894
+NH3predict_m4 <- NH3predict %>% drop_na(Clay)
+NH3predict_m4b <- NH3predict %>% drop_na(SoilCEC)
+
+```
+
+```{r include=TRUE, echo=FALSE}
+
+hist(NH3predict_m4$Clay, breaks=50)
+
+```
+
+We used Soil clay content (%) as a continuous covariate and the sole explanatory variable in the model.
+
+```{r include=TRUE, echo=TRUE}
+# Model
+m4_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Clay + offset(M1_fit), 
+            weights=Weight, 
+            data=NH3predict_m4)
+
+```
+
+The model assumptions (heteroscedasticity and normality of errors):
+
+```{r include=TRUE, echo=FALSE}
+
+# Model assumptions
+par(mfrow=c(1,3))
+plot(fitted(m4_lm), NH3predict_m4$Weight*resid(m4_lm))
+abline(h=0)
+qqnorm(resid(m4_lm))
+qqline(resid(m4_lm))
+hist(resid(m4_lm))
+par(mfrow=c(1,1))
+
+```
+
+Soil clay content (%) affected NH3-loss (%) negatively ($\beta$+/-SE = `r round(coef(m4_lm)[[2]],5)` +/- `r round(summary(m4_lm)$coef[2,2],5)`, F(`r anova(m4_lm)$Df[1]`, `r anova(m4_lm)$Df[2]`) =`r round(anova(m4_lm)$F[1], 2)`, p `r ifelse(round(anova(m4_lm)$P[1], 3)=="0", "<0.001", paste("=",round(anova(m4_lm)$P[1], 3)))`).
+
+Full model output can be seen below:
+
+```{r include=TRUE, echo=FALSE}
+# Results
+summary(m4_lm)
+
+# Save fitted values for plotting
+NH3predict_m4$M4_fits <- fitted(m4_lm)
+
+```
+
+```{r include=FALSE, echo=FALSE}
+
+# Extracting correct R2-measure (including the effect of offset)
+
+m4_lm_res <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Clay, 
+            weights=Weight, 
+            data=NH3predict_m4)
+
+round(summary(m4_lm_res)$adj.r.squared*100, 2)
+```
+
+The model explained `r round(summary(m4_lm_res)$adj.r.squared*100, 2)` % of the residual variation in NH3-loss.
+
+Figure below is a linear approximation of the effect of Soil Clay content (%) on NH3-emissions (linear slope back-transformed from the square-root scale).
+
+```{r include=TRUE, echo=FALSE, message=FALSE}
+# Model figure
+ggplot(NH3predict_m4, aes(y=NH3loss, x=Clay)) + 
+  theme_classic(base_size = 11) +
+  geom_point(colour="gray75") +
+  geom_smooth(aes(y=(sign(M4_fits)*abs(M4_fits)^3)), method='lm', se=T, colour="black") +
+  labs(x="Soil clay content (%)", y = "NH3 loss (%)") 
+
+```
+
+Test to see if a exponential function provides a better fit for the Clay data. The fit and parameters c and d were fitted a non-linear least-squares model.
+
+```{r include=TRUE, echo=FALSE}
+
+library(minpack.lm)
+MR_nls_clay <- nlsLM(NH3loss ~ c * exp(d*(Clay)), 
+                   data=NH3predict_m4, 
+                   start=list(c=0, d=0.05),
+                   control = list(maxiter = 100, scale = "levenberg"),
+                   algorithm="ptol")
+summary(MR_nls_clay)
+```
+
+The fitted relationship is as below:
+
+```{r include=TRUE, echo=FALSE}
+ggplot(NH3predict_m4, aes(x=Clay, y=NH3loss))+
+  theme_bw() +
+  geom_point(colour="gray75") +
+  geom_line(stat = "smooth", 
+            method = "nlsLM",
+            formula =  y ~ c * exp(d*(x)),
+            method.args=list(start=list(c=0, d=0.05),
+                             control = list(maxiter = 100, scale = "levenberg")),                 
+            colour="black",
+            linetype="solid",
+            size=1,
+            se = FALSE) +
+  labs(x="Clay (%))", y="(NH3 loss (%))^(1/3)")
+
+
+```
+
+```{r include=TRUE, echo=TRUE}
+
+# Transforming the Clay values to exp-scale
+NH3predict_m4$Clay.exp <- coef(MR_nls_clay)[[1]]*exp(coef(MR_nls_clay)[[2]]*NH3predict_m4$Clay)
+
+```
+
+```{r include=TRUE, echo=FALSE}
+#
+# Model
+mTR_lm_expClay <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~Clay.exp + offset(M1_fit), 
+             weights=Weight, 
+             data=NH3predict_m4)
+
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(mTR_lm_expClay))
+qqline(resid(mTR_lm_expClay))
+plot(fitted(mTR_lm_expClay), NH3predict_m4$Weight*resid(mTR_lm_expClay))
+abline(h=0)
+hist(resid(mTR_lm_expClay))
+par(mfrow=c(1,1))
+
+# Results
+summary(mTR_lm_expClay)
+```
+
+\newpage
+
+## Model A_Soil organic carbon
+
+Soil organic carbon (g/kg) was modeled as a continuous variable. Most soils in the data were mineral (with a cutoff of 120 g/kg SOC), with only 3 organic soils in the dataset.
+
+```{r include=FALSE, echo=FALSE}
+#
+#
+# Remove NA's from the dataset - n=1894
+NH3predict_m5 <- NH3predict %>% drop_na(SOC)
+
+
+```
+
+```{r include=TRUE, echo=FALSE}
+
+hist(NH3predict_m5$SOC, breaks=59)
+
+```
+
+We used Soil organic carbon (g/kg) as a sole continuous covariate in the model.
+
+```{r include=TRUE, echo=TRUE}
+
+# Model
+m5_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ SOC + offset(M1_fit), 
+            weights=Weight,
+            data=NH3predict_m5)
+
+```
+
+The model assumptions (heteroscedasticity and normality of errors):
+
+```{r include=TRUE, echo=FALSE}
+
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(m5_lm))
+qqline(resid(m5_lm))
+plot(fitted(m5_lm), NH3predict_m5$Weight*resid(m5_lm))
+abline(h=0)
+hist(resid(m5_lm))
+par(mfrow=c(1,1))
+
+```
+
+There was no effect of Soil organic carbon (g/kg) on NH3 loss (F(`r anova(m5_lm)$Df[1]`, `r anova(m5_lm)$Df[2]`) =`r round(anova(m5_lm)$F[1], 2)`, p `r ifelse(round(anova(m5_lm)$P[1], 3)=="0", "<0.001", paste("=",round(anova(m5_lm)$P[1], 3)))`).
+
+Full model output can be seen below:
+
+```{r include=TRUE, echo=FALSE, message=FALSE}
+# Results
+summary(m5_lm)
+
+# Save fitted values for plotting
+NH3predict_m5$M5_fits <- fitted(m5_lm)
+
+```
+
+```{r include=FALSE, echo=FALSE}
+
+# Extracting correct R2-measure (including the effect of offset)
+
+m5_lm_res <- lm(M1_res ~ SOC, 
+            weights=Weight,
+            data=NH3predict_m5)
+
+round(summary(m5_lm_res)$adj.r.squared*100, 2)
+anova(m5_lm_res)
+
+round(summary(m5_lm_res)$r.squared*100, 2)
+1-(1544.54/(1544.54+0.03))
+
+```
+
+Adjusted R2-value of the model was `r round(summary(m5_lm_res)$adj.r.squared, 3)`, and multiple R2 was `r round(summary(m5_lm_res)$r.squared,6)`. The negative adjusted R2-value indicates that the amount of variation accounted for by Soil organic carbon is negligible. In practice, soil organic carbon explains no variation in the data.
+
+Figure below is a linear approximation of the effect of Soil organic carbon (g/kg) on NH3-emissions (linear slope back-transformed from the square-root scale).
+
+```{r include=TRUE, echo=FALSE, message=FALSE}
+#
+#
+#
+
+# Model figure
+ggplot(NH3predict_m5, aes(y=NH3loss, x=SOC)) + 
+  theme_classic(base_size = 11) +
+  geom_point(colour="gray75") +
+  geom_smooth(aes(y=(sign(M5_fits)*abs(M5_fits^3))), method='lm', se=T, colour="black") +
+  labs(x="Soil organic carbon (g/kg)", y = "NH3 loss (%)") 
+
+```
+
+\newpage
+
+## Model A_Cover
+
+Crop cover was split into three categories: no cover ("none"), arable crops (including alfalfa, cereal, maize, rape and winter cereal), and grass. The number of observations in each group, and their NH3-loss (%) distributions can be seen below:
+
+```{r include=FALSE, echo=FALSE}
+#
+#
+# Remove NA's from the dataset - n=1894
+NH3predict_m6 <- NH3predict %>% drop_na(Cover)
+NH3predict_m6 <- filter(NH3predict_m6, Crop!="rice" & Cover!="other")
+
+# Removing empty factor levels
+NH3predict_m6$Cover <- factor(NH3predict_m6$Cover)
+# Reordering the factor levels
+NH3predict_m6$Cover <- relevel(NH3predict_m6$Cover, "None")
+
+
+```
+
+```{r include=TRUE, echo=FALSE}
+
+ddply(NH3predict_m6, c("Cover"), summarise, N=length(NH3loss))
+
+ggplot(NH3predict_m6, aes(x=NH3loss, fill=Cover)) + 
+  theme_classic(base_size=11) +
+  facet_wrap(~Cover) + 
+  geom_histogram(binwidth=5, alpha=.5, position="identity")
+
+```
+
+We added Cover as a fixed factor and a sole explanatory variable in the model.
+
+```{r include=TRUE, echo=TRUE}
+# Model
+m6_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Cover + offset(M1_fit), 
+            weights=Weight,
+            data=NH3predict_m6)
+
+```
+
+The model assumptions (heteroscedasticity and normality of errors):
+
+```{r include=TRUE, echo=FALSE}
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(m6_lm))
+qqline(resid(m6_lm))
+plot(fitted(m6_lm), NH3predict_m6$Weight*resid(m6_lm))
+abline(h=0)
+hist(resid(m6_lm))
+par(mfrow=c(1,1))
+
+```
+
+The cover categories (none, arable, grass) did not significantly differ from one another in NH3-emissions (F(`r anova(m6_lm)$Df[1]`, `r anova(m6_lm)$Df[2]`) =`r round(anova(m6_lm)$F[1], 2)`, p `r ifelse(round(anova(m6_lm)$P[1], 3)=="0", "<0.001", paste("=",round(anova(m6_lm)$P[1], 3)))`).
+
+Full model output can be seen below:
+
+```{r include=TRUE, echo=FALSE}
+# Results
+summary(m6_lm)
+
+# Save fitted values for plotting
+NH3predict_m6$M6_fits <- fitted(m6_lm)
+
+```
+
+```{r include=FALSE, echo=FALSE}
+
+# Extracting correct R2-measure (including the effect of offset)
+
+m6_lm_res <- lm(M1_res ~ Cover, 
+            weights=Weight,
+            data=NH3predict_m6)
+
+round(summary(m6_lm_res)$adj.r.squared*100, 2)
+
+```
+
+Adjusted R2-value of the model was `r round(summary(m6_lm_res)$adj.r.squared, 5)`, and multiple R2 was `r round(summary(m6_lm_res)$r.squared,5)`. The negative adjusted R2-value indicates that the amount of variation accounted for by Cover crops is negligible. In practice, cover crops explain no variation in the data.
+
+The effect sizes (marginal means) of % NH3-loss for each cover category can be seen below.
+
+```{r include=TRUE, echo=FALSE}
+
+# Effect sizes
+m6_est <- emmeans(m6_lm, ~ Cover)
+m6_est <- data.frame(m6_est)
+
+m6_est
+```
+
+```{r include=TRUE, echo=FALSE}
+# Model figure
+ggplot(m6_est, aes(y=Cover, x=emmean, xmin=lower.CL, xmax=upper.CL)) +
+  theme_classic(base_size = 11) +
+  geom_point(size=3) + 
+  geom_errorbarh(height=.1)  +
+  geom_vline(xintercept=0, colour="black", linetype="dashed") +
+  labs(x="Effect Size (NH3 loss (%))", y="") +
+  theme(legend.position = "none")
+
+```
+
+\newpage
+
+\newpage
+
+## Model A_Air temperature and rainfall
+
+AirTemperature over the duration of the experiment (Celcius) and mean rainfall over the experimental period (mm) were analysed together, to explore interactions between the two variables. The frequency distributions of the two variables can be seen below.
+
+```{r include=FALSE, echo=FALSE}
+#########################################################################################################################################################
+## MODEL A7-A8
+
+#
+#
+# Remove NA's from the dataset
+NH3predict_m7 <- NH3predict %>% drop_na(c(AirTemperature, Rain.mean))
+
+NH3predict_m7 <- filter(NH3predict_m7, Place=="Outdoor")
+
+cor(NH3predict_m7$AirTemperature,NH3predict_m7$Rainfall)
+cor.test(NH3predict_m7$AirTemperature,NH3predict_m7$Rainfall)
+```
+
+There are `r length(NH3predict_m7$NH3loss)` observations in the analysis.
+
+```{r include=TRUE, echo=FALSE}
+
+hist(NH3predict_m7$AirTemperature, breaks=50)
+hist(NH3predict_m7$Rain.mean, breaks=50)
+
+```
+
+```{r include=TRUE, echo=TRUE}
+# Model
+mTR_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ AirTemperature * Rain.mean + offset(M1_fit), 
+             weights=Weight, 
+             data=NH3predict_m7)
+
+```
+
+The model assumptions (heteroscedasticity and normality of errors):
+
+```{r include=TRUE, echo=FALSE}
+
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(mTR_lm))
+qqline(resid(mTR_lm))
+plot(fitted(mTR_lm), NH3predict_m7$Weight*resid(mTR_lm))
+abline(h=0)
+hist(resid(mTR_lm))
+par(mfrow=c(1,1))
+
+
+```
+
+There was a marginally non-significant effect of interaction (F(`r anova(mTR_lm)$Df[3]`, `r anova(mTR_lm)$Df[4]`) =`r round(anova(mTR_lm)$F[3], 2)`, p `r ifelse(round(anova(mTR_lm)$P[3], 3)=="0", "<0.001", paste("=",round(anova(mTR_lm)$P[3], 3)))`), and a marginally non-significant main effect of mean rainfall (F(`r anova(mTR_lm)$Df[2]`, `r anova(mTR_lm)$Df[4]`) =`r round(anova(mTR_lm)$F[2], 2)`, p `r ifelse(round(anova(mTR_lm)$P[2], 3)=="0", "<0.001", paste("=",round(anova(mTR_lm)$P[2], 3)))`). There was no main effect of air temperature (F(`r anova(mTR_lm)$Df[1]`, `r anova(mTR_lm)$Df[4]`) =`r round(anova(mTR_lm)$F[1], 2)`, p `r ifelse(round(anova(mTR_lm)$P[1], 3)=="0", "<0.001", paste("=",round(anova(mTR_lm)$P[1], 3)))`).
+
+Full model output can be seen below:
+
+```{r include=TRUE, echo=FALSE}
+# Results
+summary(mTR_lm)
+
+# Save fitted values for plotting
+NH3predict_m7$M7_fits <- fitted(mTR_lm)
+
+
+```
+
+```{r include=FALSE, echo=FALSE}
+
+# Extracting correct R2-measure (including the effect of offset)
+
+mTR_lm_res <- lm(M1_res ~ AirTemperature * Rain.mean, 
+             weights=Weight, 
+             data=NH3predict_m7)
+
+round(summary(mTR_lm_res)$adj.r.squared*100, 2)
+
+```
+
+Air temperature and rainfall, and the interaction between the two explain `r round(summary(mTR_lm_res)$adj.r.squared*100, 2)` % of the variation in the data.
+
+The marginally non-significant interaction between rainfall and temperature can be interpreted as the slope of air temperature increasing in steepness with increasing rainfall. This means that the effect of temperature is dependent on rainfall, and temperature only has an effect when rain is present.
+
+```{r include=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Rainfall modifying Temperature
+interact_plot(mTR_lm, pred=AirTemperature, modx=Rain.mean,
+              partial.residuals = TRUE, 
+              #linearity.check = TRUE,
+              modx.values = c(0, 5,10,15,20,25))
+
+```
+
+Similarly, the interaction can be interpreted from the perspective of rain: The association between rain and NH3 emissions changes from negative to slightly positive with increasing temperature.
+
+```{r include=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Temperature modifying Rainfall
+interact_plot(mTR_lm, pred=Rain.mean, modx=AirTemperature, 
+              partial.residuals = TRUE, 
+              modx.values = c(0, 5, 10, 15, 20, 25, 30, 35))
+
+
+```
+
+Simple slope analysis on the interaction can be seen below. The slope of temperature is statistically significant within range noted below. Note that the results below rely on statistical significance of the interaction in the model above, which is not fulfilled.
+
+```{r include=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Simple slopes analysis
+mTR_slopes <- sim_slopes(mTR_lm, pred = Rain.mean, modx = AirTemperature, 
+                         modx.values = c(0, 5,10,15,20,25))
+#mTR_slopes
+plot(mTR_slopes)
+johnson_neyman(mTR_lm, pred = Rain.mean, modx = AirTemperature, alpha = .05)
+
+```
+
+### A_Air temperature
+
+```{r include=FALSE, echo=TRUE}
+NH3predict_m7_2 <- NH3predict %>% drop_na(c(AirTemperature))
+##NH3predict_m7_2 <- filter(NH3predict_m7_2, Place=="Outdoor")
+
+
+m7_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ AirTemperature + offset(M1_fit), 
+             weights=Weight, 
+             data=NH3predict_m7_2)
+
+m7_lm_res <- lm(M1_res ~ AirTemperature, 
+             weights=Weight, 
+             data=NH3predict_m7_2)
+
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(m7_lm))
+qqline(resid(m7_lm))
+plot(fitted(m7_lm), NH3predict_m7_2$Weight*resid(m7_lm))
+abline(h=0)
+hist(resid(m7_lm))
+par(mfrow=c(1,1))
+
+NH3predict_m7_2$M7_fits <- fitted(m7_lm)
+
+NH3predict_m7_2b <- NH3predict[which(NH3predict$Place=="Lab"),]
+NH3predict_m7_2b <- NH3predict_m7_2b %>% drop_na(c(AirTemperature))
+
+m7b_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ AirTemperature + offset(M1_fit), 
+             weights=Weight, 
+             data=NH3predict_m7_2b)
+summary(m7b_lm)
+
+
+```
+
+Considering air temperature separately, there is a statistically significant effect of air temperature (F(`r anova(m7_lm)$Df[1]`, `r anova(m7_lm)$Df[2]`) =`r round(anova(m7_lm)$F[1], 2)`, p `r ifelse(round(anova(m7_lm)$P[1], 3)=="0", "<0.001", paste("=",round(anova(m7_lm)$P[1], 3)))`). Adjusted R2-value of the model was `r round(summary(m7_lm_res)$adj.r.squared, 5)`, and multiple R2 was `r round(summary(m7_lm_res)$r.squared,5)`. This means air temperature explains `r round(summary(m7_lm_res)$adj.r.squared, 5)*100` % of the variation.
+
+There are `r length(NH3predict_m7_2$NH3loss)` observations in the analysis.
+
+The full model output with the slopes and their standard error can be seen below:
+
+```{r include=TRUE, echo=FALSE}
+
+summary(m7_lm)
+
+```
+
+### A_Air temperature over first 7 days
+
+```{r include=FALSE, echo=TRUE}
+NH3predict_mA7 <- NH3predict %>% drop_na(c(Temp.7d))
+NH3predict_mA7$Temp.7d <-  as.numeric(as.character(NH3predict_mA7$Temp.7d))
+NH3predict_mA7 <- NH3predict_mA7 %>% drop_na(c(Temp.7d))
+#NH3predict_mA7 <- filter(NH3predict_mA7, Place=="Outdoor")
+
+NH3predict_mA7$Temp.7d <- as.numeric(as.character(NH3predict_mA7$Temp.7d))
+mA7_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Temp.7d + offset(M1_fit), 
+             weights=Weight, 
+             data=NH3predict_mA7)
+
+mA7_lm_res <- lm(M1_res ~ Temp.7d, 
+             weights=Weight, 
+             data=NH3predict_mA7)
+
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(mA7_lm))
+qqline(resid(mA7_lm))
+plot(fitted(mA7_lm), NH3predict_mA7$Weight*resid(mA7_lm))
+abline(h=0)
+hist(resid(mA7_lm))
+par(mfrow=c(1,1))
+
+NH3predict_mA7$MA7_fits <- fitted(mA7_lm)
+
+```
+
+There is no statistically significant effect of air temperature over the first 7 days of the experiment (F(`r anova(mA7_lm)$Df[1]`, `r anova(mA7_lm)$Df[2]`) =`r round(anova(mA7_lm)$F[1], 2)`, p `r ifelse(round(anova(mA7_lm)$P[1], 3)=="0", "<0.001", paste("=",round(anova(mA7_lm)$P[1], 3)))`). Adjusted R2-value of the model was `r round(summary(mA7_lm_res)$adj.r.squared, 5)`, and multiple R2 was `r round(summary(mA7_lm_res)$r.squared,5)`. This means air temperature over the first 7 days explains `r round(summary(mA7_lm_res)$adj.r.squared, 5)*100` % of the variation.
+
+There are `r length(NH3predict_mA7$NH3loss)` observations in the analysis.
+
+The full model output with the slopes and their standard error can be seen below:
+
+```{r include=TRUE, echo=FALSE}
+
+summary(mA7_lm)
+
+```
+
+### A_Mean daily rainfall
+
+```{r include=FALSE, echo=TRUE}
+NH3predict_m8 <- NH3predict %>% drop_na(c(Rain.mean))
+NH3predict_m8 <- filter(NH3predict_m8, Place=="Outdoor")
+
+m8_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Rain.mean + offset(M1_fit), 
+             weights=Weight, 
+             data=NH3predict_m8)
+
+m8_lm_res <- lm(M1_res ~ Rain.mean, 
+             weights=Weight, 
+             data=NH3predict_m8)
+
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(m8_lm))
+qqline(resid(m8_lm))
+plot(fitted(m8_lm), NH3predict_m8$Weight*resid(m8_lm))
+abline(h=0)
+hist(resid(m8_lm))
+par(mfrow=c(1,1))
+
+NH3predict_m8$M8_fits <- fitted(m8_lm)
+
+
+```
+
+Considering mean rainfall separately, there is no statistically significant effect of rain (F(`r anova(m8_lm)$Df[1]`, `r anova(m8_lm)$Df[2]`) =`r round(anova(m8_lm)$F[1], 2)`, p `r ifelse(round(anova(m8_lm)$P[1], 3)=="0", "<0.001", paste("=",round(anova(m8_lm)$P[1], 3)))`). Adjusted R2-value of the model was `r round(summary(m8_lm_res)$adj.r.squared, 5)`, and multiple R2 was `r round(summary(m8_lm_res)$r.squared,5)`. Thus, rainfall doesn't meaningfully explain any variation in the data.
+
+There are `r length(NH3predict_m8$NH3loss)` observations in the analysis.
+
+The full model output with the slopes and their standard error can be seen below:
+
+```{r include=TRUE, echo=FALSE}
+
+summary(m8_lm)
+
+```
+
+### A_Rainfall over first 72 h
+
+```{r include=FALSE, echo=TRUE}
+NH3predict_R8 <- NH3predict %>% drop_na(c(Rain.72h))
+NH3predict_R8 <- filter(NH3predict_R8, Place=="Outdoor")
+
+NH3predict_R8$Rain.72h <- as.numeric(as.character(NH3predict_R8$Rain.72h))
+NH3predict_R8 <- NH3predict_R8 %>% drop_na(c(Rain.72h))
+
+NH3predict$Rain.72h <- as.numeric(as.character(NH3predict$Rain.72h))
+
+mR8_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Rain.72h + offset(M1_fit), 
+             weights=Weight, 
+             data=NH3predict_R8)
+
+mR8_lm_res <- lm(M1_res ~ Rain.72h, 
+             weights=Weight, 
+             data=NH3predict_R8)
+
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(mR8_lm))
+qqline(resid(mR8_lm))
+plot(fitted(mR8_lm), NH3predict_R8$Weight*resid(mR8_lm))
+abline(h=0)
+hist(resid(mR8_lm))
+par(mfrow=c(1,1))
+
+NH3predict_R8$MR8_fits <- fitted(mR8_lm)
+
+
+```
+
+There is no statistically significant effect of rainfall during the first 72h of the experiment (F(`r anova(mR8_lm)$Df[1]`, `r anova(mR8_lm)$Df[2]`) =`r round(anova(mR8_lm)$F[1], 2)`, p `r ifelse(round(anova(mR8_lm)$P[1], 3)=="0", "<0.001", paste("=",round(anova(mR8_lm)$P[1], 3)))`). Adjusted R2-value of the model was `r round(summary(mR8_lm_res)$adj.r.squared, 5)`, and multiple R2 was `r round(summary(mR8_lm_res)$r.squared,5)`. Thus, rainfall during the first 72h doesn't meaningfully explain any variation in the data.
+
+There are `r length(NH3predict_R8$NH3loss)` observations in the analysis.
+
+The full model output with the slopes and their standard error can be seen below:
+
+```{r include=TRUE, echo=FALSE}
+
+summary(mR8_lm)
+
+```
+
+Figures below show a linear approximation of the effect of air temperature (Celcius) and mean rainfall (mm) on NH3-emissions (linear slope back-transformed from the square-root scale).
+
+```{r include=TRUE, echo= FALSE, message=FALSE}
+
+# Figure of Temperature and Rainfall as estimated by the model
+ggplot(NH3predict_m7_2, aes(x = AirTemperature, y = NH3loss)) +
+  theme_classic(base_size=11) +
+  geom_point(colour="gray75") +
+  stat_smooth(aes(y=(sign(M7_fits)*abs(M7_fits)^3)), method="lm", colour="black") +
+  labs(x="Air temperature", y="NH3 loss (%)")
+
+ggplot(NH3predict_m8, aes(x = Rain.mean, y = NH3loss)) +
+  theme_classic(base_size=11) +
+  geom_point(colour="gray75") +
+  stat_smooth(aes(y=(sign(M8_fits)*abs(M8_fits)^3)), method="lm", colour="black") +
+  labs(x="Rainfall (mean mm/day)", y="NH3 loss (%)")
+
+```
+
+### A_Rainfall as a non-linear effect
+
+We fitted an exponential function with parameters a and b to rainfall data. The equation is as follows:
+
+$f(Rain.mean) = a * e^{(b*Rain.mean)}$
+
+The response variable is presented in square-root(+4) scale to make the data comparable for further analysis.
+
+To test the fit and to estimate parameters a and b, we fitted a non-linear least-squares model.
+
+```{r include=TRUE, echo=FALSE}
+
+library(minpack.lm)
+MR_nls <- nlsLM(NH3loss ~ a * exp(b*(Rain.mean)), 
+                   data=NH3predict_m7, 
+                   start=list(a=0, b=0.05),
+                   control = list(maxiter = 100, scale = "levenberg"),
+                   algorithm="ptol")
+summary(MR_nls)
+```
+
+The fitted relationship is as below:
+
+```{r include=TRUE, echo=FALSE}
+ggplot(NH3predict_m7, aes(x=Rain.mean, y=NH3loss))+
+  theme_bw() +
+  geom_point(colour="gray75") +
+  geom_line(stat = "smooth", 
+            method = "nlsLM",
+            formula =  y ~ a * exp(b*(x)),
+            method.args=list(start=list(a=0, b=0.05),
+                             control = list(maxiter = 100, scale = "levenberg")),                 
+            colour="black",
+            linetype="solid",
+            size=1,
+            se = FALSE) +
+  labs(x="Rainfall (mean mm/day)", y="NH3 loss (%)")
+
+```
+
+The RMSE (root mean square error) of the model was `r sqrt(mean((NH3predict_m7$NH3loss-fitted(MR_nls))^2))`, which is on the same scale as mean NH3loss values in the data (`r mean(NH3predict_m7$NH3loss)`) indicating a poor fit of the model. (Error equal to the estimated value.)
+
+We calculated new rain estimates on the exponential scale, with the estimated parameters taken into account, and ran the analysis with air temperature again, using the exponential Rain.mean values calculated using the coefficients (parameter estimates) from the non-linear least-squares fit above.
+
+```{r include=TRUE, echo=TRUE}
+
+# Transforming the Rain values to exp-scale
+NH3predict_m7$Rain.exp <- coef(MR_nls)[[1]]*exp(coef(MR_nls)[[2]]*NH3predict_m7$Rain.mean)
+
+```
+
+```{r include=TRUE, echo=FALSE}
+#
+# Model
+mTR_lm_exp <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ AirTemperature * Rain.exp + offset(M1_fit), 
+             weights=Weight, 
+             data=NH3predict_m7)
+
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(mTR_lm_exp))
+qqline(resid(mTR_lm_exp))
+plot(fitted(mTR_lm_exp), NH3predict_m7$Weight*resid(mTR_lm_exp))
+abline(h=0)
+hist(resid(mTR_lm_exp))
+par(mfrow=c(1,1))
+
+# Results
+summary(mTR_lm_exp)
+```
+
+```{r include=TRUE, echo=FALSE}
+#
+# Model
+mTR_lm_exp2 <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ AirTemperature + Rain.exp + offset(M1_fit), 
+             weights=Weight, 
+             data=NH3predict_m7)
+
+#anova(mTR_lm_exp, mTR_lm_exp2)
+
+
+```
+
+When the interaction is removed, we end in a model showing very similar results as the linear model above, with no statistically significant effect of rainfall (F(`r anova(mTR_lm_exp2)$Df[2]`, `r anova(mTR_lm_exp2)$Df[3]`) =`r round(anova(mTR_lm_exp2)$F[2], 2)`, p `r ifelse(round(anova(mTR_lm_exp2)$P[2], 3)=="0", "<0.001", paste("=",round(anova(mTR_lm_exp)$P[2], 3)))`), nor air temperature (F(`r anova(mTR_lm_exp2)$Df[1]`, `r anova(mTR_lm_exp2)$Df[3]`) =`r round(anova(mTR_lm_exp2)$F[1], 2)`, p `r ifelse(round(anova(mTR_lm_exp2)$P[1], 3)=="0", "<0.001", paste("=",round(anova(mTR_lm_exp)$P[1], 3)))`), but a statistically significant slope for air temperature (see below).
+
+```{r include=TRUE, echo=FALSE}
+
+# Results
+summary(mTR_lm_exp2)
+
+
+```
+
+```{r include=TRUE, echo=FALSE}
+
+# Transforming the Rain values to exp-scale
+NH3predict_m8$Rain.exp <- coef(MR_nls)[[1]]*exp(coef(MR_nls)[[2]]*NH3predict_m8$Rain.mean)
+
+#
+# Model
+mR_lm_exp <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Rain.exp + offset(M1_fit), 
+             weights=Weight, 
+             data=NH3predict_m8)
+
+# Model assumptions
+# par(mfrow=c(1,3))
+# qqnorm(resid(mR_lm_exp))
+# qqline(resid(mR_lm_exp))
+# plot(fitted(mR_lm_exp), NH3predict_m8$Weight*resid(mR_lm_exp))
+# abline(h=0)
+# hist(resid(mR_lm_exp))
+# par(mfrow=c(1,1))
+
+```
+
+When non-linear rain is analysed separately, there is no effect of rain on NH3loss (F(`r anova(mR_lm_exp)$Df[1]`, `r anova(mR_lm_exp)$Df[2]`) =`r round(anova(mR_lm_exp)$F[1], 2)`, p `r ifelse(round(anova(mR_lm_exp)$P[1], 3)=="0", "<0.001", paste("=",round(anova(mR_lm_exp)$P[1], 3)))`). See the slope estimate from below:
+
+```{r include=TRUE, echo=FALSE}
+
+# Results
+summary(mR_lm_exp)
+
+```
+
+
+\newpage
+
+## Model A_Irrigation
+
+```{r include=FALSE, echo=FALSE}
+
+#########################################################################################################################################################
+## MODEL A9
+
+#
+#
+# Remove NA's from the dataset
+NH3predict_m9 <- NH3predict %>% drop_na(irrigation)
+
+```
+
+Irrigation was modeled as a binomial variable due to heavy zero-inflation in the data.
+
+```{r include=TRUE, echo=FALSE}
+NH3predict_m9$irrigation <- as.numeric(as.character(NH3predict_m9$irrigation))
+hist(NH3predict_m9$irrigation, breaks=50)
+
+```
+
+The number of observations in total in each category can be seen below:
+
+```{r include=TRUE, echo=FALSE}
+
+ddply(NH3predict_m9, "irrigation_cat", summarise, N=length(NH3loss))
+
+```
+
+```{r include=TRUE, echo=TRUE}
+# Model 
+m9_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ irrigation_cat + offset(M1_fit), 
+            weights=Weight,
+            data=NH3predict_m9)
+
+```
+
+The check for normality and heteroscedasticity of errors can be seen below:
+
+```{r include=TRUE, echo=FALSE}
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(m9_lm))
+qqline(resid(m9_lm))
+plot(fitted(m9_lm), NH3predict_m9$Weight*resid(m9_lm))
+abline(h=0)
+hist(resid(m9_lm))
+par(mfrow=c(1,1))
+
+
+```
+
+There was no effect of irrigation on NH3-loss (F(`r anova(m9_lm)$Df[1]`, `r anova(m9_lm)$Df[2]`) =`r round(anova(m9_lm)$F[1], 2)`, p `r ifelse(round(anova(m9_lm)$P[1], 3)=="0", "<0.001", paste("=",round(anova(m9_lm)$P[1], 3)))`).
+
+```{r include=TRUE, echo=FALSE}
+# Results
+summary(m9_lm)
+
+# Save fitted values for plotting
+NH3predict_m9$M9_fits <- fitted(m9_lm)
+
+```
+
+```{r include=FALSE, echo=FALSE}
+
+# Extracting correct R2-measure (including the effect of offset)
+
+m9_lm_res <- lm(M1_res ~ irrigation_cat, 
+            weights=Weight,
+            data=NH3predict_m9)
+
+round(summary(m9_lm_res)$adj.r.squared*100, 2)
+
+```
+
+Adjusted R2-value of the model was `r round(summary(m9_lm_res)$adj.r.squared, 5)`, and multiple R2 was `r round(summary(m9_lm_res)$r.squared,5)`. The negative adjusted R2-value indicates that the amount of variation accounted for by irrigation is negligible. In practice, it explain no variation in the data.
+
+The marginal means for NH3 loss in no-irrigation and irrigation categories can be seen below.
+
+```{r include=TRUE, echo=FALSE}
+
+#
+# Effect sizes
+m9_est <- emmeans(m9_lm, ~irrigation_cat)
+m9_est <- data.frame(m9_est)
+m9_est
+
+# Figure
+ggplot(m9_est, aes(y=irrigation_cat, x=emmean, xmin=lower.CL, xmax=upper.CL)) +
+  theme_classic(base_size = 11) +
+  geom_point(size=3) + 
+  geom_errorbarh(height=.1)  +
+  geom_vline(xintercept=0, colour="black", linetype="dashed") +
+  labs(x="Effect Size (NH3 loss (%))", y="Irrigation") +
+  theme(legend.position = "none")
+
+#
+#
+# 
+```
+
+\newpage
+
+## Model A_Water input
+
+Daily water input (mm) consists of irrigation and rainfall.
+
+```{r include=TRUE, echo=FALSE}
+
+#########################################################################################################################################################
+## MODEL A10
+
+#
+#
+# Remove NA's from the dataset
+NH3predict_m10 <- NH3predict %>% drop_na(WaterPerDay)
+
+
+```
+
+```{r include=TRUE, echo=FALSE}
+hist(NH3predict_m10$WaterPerDay, breaks=50)
+
+```
+
+```{r include=TRUE, echo=TRUE}
+#  Model
+m10_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ WaterPerDay + offset(M1_fit), 
+             weights=Weight,
+             data=NH3predict_m10)
+```
+
+Heteroscedasticity and normality of erros were as below:
+
+```{r include=TRUE, echo=FALSE}
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(m10_lm))
+qqline(resid(m10_lm))
+plot(fitted(m10_lm), NH3predict_m10$Weight*resid(m10_lm))
+abline(h=0)
+hist(resid(m10_lm))
+par(mfrow=c(1,1))
+```
+
+There was no effect of water input on NH3-loss (F(`r anova(m10_lm)$Df[1]`, `r anova(m10_lm)$Df[2]`) =`r round(anova(m10_lm)$F[1], 2)`, p `r ifelse(round(anova(m10_lm)$P[1], 3)=="0", "<0.001", paste("=",round(anova(m10_lm)$P[1], 3)))`).
+
+```{r include=TRUE, echo=FALSE}
+
+# Results
+summary(m10_lm)
+anova(m10_lm)
+
+# Save fitted values for plotting
+NH3predict_m10$M10_fits <- fitted(m10_lm)
+
+```
+
+```{r include=FALSE, echo=FALSE}
+
+# Extracting correct R2-measure (including the effect of offset)
+
+m10_lm_res <- lm(M1_res ~ WaterPerDay, 
+             weights=Weight,
+             data=NH3predict_m10)
+
+round(summary(m10_lm_res)$adj.r.squared*100, 2)
+
+```
+
+Adjusted R2-value of the model was `r round(summary(m10_lm_res)$adj.r.squared, 5)`, and multiple R2 was `r round(summary(m10_lm_res)$r.squared,5)`. The negative adjusted R2-value indicates that the amount of variation accounted for by daily water input is negligible. In practice, it explain no variation in the data.
+
+Figure below shows a linear approximation of the effect of daily water input (mm) on NH3-emissions (linear slope back-transformed from the square-root scale).
+
+```{r include=TRUE, echo=FALSE, message=FALSE}
+
+# Figure
+ggplot(NH3predict_m10, aes(y=NH3loss, x=WaterPerDay)) + 
+  theme_classic(base_size = 11) +
+  geom_point(colour="gray75") +
+  geom_smooth(method="lm", se=T, colour="black", aes(y=(sign(M10_fits)*abs(M10_fits)^3))) +
+  labs(x="Water input (mm)", y = "NH3 loss (%)") 
+
+#
+#
+# 
+
+```
+
+\newpage
+
+## Model A_Experiment duration
+
+Duration of the experiment (days).
+
+```{r include=TRUE, echo=FALSE}
+
+#########################################################################################################################################################
+## MODEL A10
+
+#
+#
+# Remove NA's from the dataset
+NH3predict_m11 <- NH3predict[which(is.na(NH3predict$Duration)==FALSE),]
+NH3predict_m11b <- NH3predict_m11[which(is.na(NH3predict$AirTemperature)==FALSE),]
+summary(NH3predict_m11$Duration)
+```
+
+```{r include=TRUE, echo=FALSE}
+hist(NH3predict_m11$Duration, breaks=50)
+
+```
+
+```{r include=TRUE, echo=TRUE}
+#  Model
+m11_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Duration + offset(M1_fit), 
+             weights=Weight,
+             data=NH3predict_m11)
+```
+
+Heteroscedasticity and normality of erros were as below:
+
+```{r include=TRUE, echo=FALSE, warning=FALSE}
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(m11_lm))
+qqline(resid(m11_lm))
+plot(fitted(m11_lm), NH3predict_m10$Weight*resid(m11_lm))
+abline(h=0)
+hist(resid(m11_lm))
+par(mfrow=c(1,1))
+```
+
+There was no effect of duration of the experiment on NH3-loss (F(`r anova(m11_lm)$Df[1]`, `r anova(m11_lm)$Df[2]`) =`r round(anova(m11_lm)$F[1], 2)`, p `r ifelse(round(anova(m11_lm)$P[1], 3)=="0", "<0.001", paste("=",round(anova(m11_lm)$P[1], 3)))`).
+
+```{r include=TRUE, echo=FALSE}
+
+# Results
+summary(m11_lm)
+anova(m11_lm)
+
+# Save fitted values for plotting
+NH3predict_m11$M11_fits <- fitted(m11_lm)
+
+```
+
+```{r include=FALSE, echo=FALSE}
+
+# Extracting correct R2-measure (including the effect of offset)
+
+m11_lm_res <- lm(M1_res ~ Duration, 
+             weights=Weight,
+             data=NH3predict_m11)
+
+round(summary(m11_lm_res)$adj.r.squared*100, 2)
+
+```
+
+Adjusted R2-value of the model was `r round(summary(m11_lm_res)$adj.r.squared, 5)`, and multiple R2 was `r round(summary(m11_lm_res)$r.squared,5)`. The negative adjusted R2-value indicates that the amount of variation accounted for by duration of the experiment is negligible. In practice, it explain no variation in the data.
+
+Figure below shows a linear approximation of the effect of daily water input (mm) on NH3-emissions (linear slope back-transformed from the square-root scale).
+
+```{r include=TRUE, echo=FALSE, message=FALSE}
+
+# Figure
+ggplot(NH3predict_m11, aes(y=NH3loss, x=Duration)) + 
+  theme_classic(base_size = 11) +
+  geom_point(colour="gray75") +
+  geom_smooth(method="lm", se=T, colour="black", aes(y=(sign(M11_fits)*abs(M11_fits)^3))) +
+  labs(x="Experiment duration (days)", y = "NH3 loss (%)") 
+
+#
+#
+# 
+# Remove NA's from the dataset
+# NH3predict_m12 <- NH3predict[which(is.na(NH3predict$AEZ)==FALSE),]
+# summary(NH3predict_m12$AEZ)
+# #  Model
+# m12_lm <- lm(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ AEZ + Crop + Crop * AEZ + offset(M1_fit), 
+#             weights=Weight,
+#            data=NH3predict_m12)
+# summary(m12_lm)
+# anova(m12_lm)
+
+```
+
+\newpage
+
+## Combined model with all variables of effect
+
+### Model A1_Base model and pH
+
+```{r include=TRUE, echo=FALSE}
+
+
+NH3predict_mALL5 <- NH3predict[which(is.na(NH3predict$pH_cat)==FALSE),]
+
+mALL5_lmer <- lmer(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Fertiliser + Application + Method + Place +  pH_cat + Fertiliser:pH_cat +(1|Ref),
+                   weights=Weight,
+                   control=lmerControl(optimizer="bobyqa"),
+                   data=NH3predict_mALL5)
+anova(mALL5_lmer)
+summary(mALL5_lmer )
+
+
+```
+
+Total observations = `r length(NH3predict_mALL5$NH3loss)` 
+
+\normalsize
+
+Model A1 explains `r round(r.squaredGLMM(mALL5_lmer)[2]*100, 2)` % of the variation in the data (conditional R2), with the fixed effects explaining `r round(r.squaredGLMM(mALL5_lmer)[1]*100, 2)` % (marginal R2). The R2-values for linear mixed effects model were calculated according to Nagakawa & Schielzeth (2013).
+
+```{r include=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+#
+##### 
+# Estimates for each main effect
+
+
+#
+# Fertiliser
+
+# Effect sizes
+at <- list("Application"="Broadcast", "Method"="Micromet", "Place"="Outdoor", "pH_cat"="normal")
+mALL5_est_F <- emmeans(mALL5_lmer, ~ Fertiliser, at=at)
+mALL5_est_F  <- data.frame(mALL5_est_F)
+
+mALL5_est_F$emmean <- as.numeric(as.character(mALL5_est_F$emmean))
+mALL5_est_F$emmean <- inv_signed_cube_root(mALL5_est_F$emmean)
+mALL5_est_F$lower.CL <- inv_signed_cube_root(mALL5_est_F$lower.CL)
+mALL5_est_F$upper.CL <- inv_signed_cube_root(mALL5_est_F$upper.CL)
+
+#
+# Application
+
+# Effect sizes
+at <- list("Fertiliser"="urea+", "Method"="Micromet", "Place"="Outdoor", "pH_cat"="normal")
+mALL5_est_A <- emmeans(mALL5_lmer, ~ Application, at=at)
+mALL5_est_A <- data.frame(mALL5_est_A)
+
+mALL5_est_A$emmean <- as.numeric(as.character(mALL5_est_A$emmean))
+mALL5_est_A$emmean <- inv_signed_cube_root(mALL5_est_A$emmean)
+mALL5_est_A$lower.CL <- inv_signed_cube_root(mALL5_est_A$lower.CL)
+mALL5_est_A$upper.CL <- inv_signed_cube_root(mALL5_est_A$upper.CL)
+
+
+#
+# Method
+
+# Effect sizes
+at <- list("Fertiliser"="urea+", "Application"="Broadcast", "Place"="Outdoor", "pH_cat"="normal")
+mALL5_est_M <- emmeans(mALL5_lmer, ~ Method, at=at)
+mALL5_est_M <- data.frame(mALL5_est_M)
+
+mALL5_est_M$emmean <- as.numeric(as.character(mALL5_est_M$emmean))
+mALL5_est_M$emmean <- inv_signed_cube_root(mALL5_est_M$emmean)
+mALL5_est_M$lower.CL <- inv_signed_cube_root(mALL5_est_M$lower.CL)
+mALL5_est_M$upper.CL <- inv_signed_cube_root(mALL5_est_M$upper.CL)
+
+#
+# Place
+
+# Effect size
+at <- list("Fertiliser"="urea+", "Application"="Broadcast", "Method"="Micromet", "pH_cat"="normal")
+mALL5_est_P <- emmeans(mALL5_lmer, ~ Place, at=at)
+mALL5_est_P <- data.frame(mALL5_est_P)
+
+mALL5_est_P$emmean <- as.numeric(as.character(mALL5_est_P$emmean))
+mALL5_est_P$emmean <- inv_signed_cube_root(mALL5_est_P$emmean)
+mALL5_est_P$lower.CL <- inv_signed_cube_root(mALL5_est_P$lower.CL)
+mALL5_est_P$upper.CL <- inv_signed_cube_root(mALL5_est_P$upper.CL)
+
+
+#
+# Soil pH
+
+# Effect size
+at <- list("Fertiliser"="urea+", "Application"="Broadcast", "Method"="Micromet", "Place"="Outdoor")
+mALL5_est_pH <- emmeans(mALL5_lmer, ~ pH_cat, at=at)
+mALL5_est_pH <- data.frame(mALL5_est_pH)
+
+mALL5_est_pH$emmean <- as.numeric(as.character(mALL5_est_pH$emmean))
+mALL5_est_pH$emmean <- inv_signed_cube_root(mALL5_est_pH$emmean)
+mALL5_est_pH$lower.CL <- inv_signed_cube_root(mALL5_est_pH$lower.CL)
+mALL5_est_pH$upper.CL <- inv_signed_cube_root(mALL5_est_pH$upper.CL)
+
+#
+# Interaction
+
+# Effect size
+at <- list("Application"="Broadcast", "Method"="Micromet", "Place"="Outdoor")
+mALL5_est_pHFe <- emmeans(mALL5_lmer, pairwise ~ pH_cat | Fertiliser, at=at)
+mALL5_est_pHFe <- data.frame(mALL5_est_pHFe)
+
+mALL5_est_pHFe$emmean <- as.numeric(as.character(mALL5_est_pHFe$emmean))
+mALL5_est_pHFe$emmean <- inv_signed_cube_root(mALL5_est_pHFe$emmean)
+mALL5_est_pHFe$lower.CL <- inv_signed_cube_root(mALL5_est_pHFe$lower.CL)
+mALL5_est_pHFe$upper.CL <- inv_signed_cube_root(mALL5_est_pHFe$upper.CL)
+
+
+#
+
+## 
+# Collating a dataframe with all effect sizes
+
+# Vectors for emmeans-objects and fectors
+Model_vec <- c("mALL5_est_F", "mALL5_est_A", "mALL5_est_M", "mALL5_est_P", "mALL5_est_pH")
+Factor_vec <- c("Fertiliser", "Application", "Method", "Place", "Soil pH")
+
+# Creating an empty dataframe
+mALL5_estimates <- data.frame(Factor=factor(), Level=factor(), Effect=numeric(), SE=numeric(), df=numeric(), lower.CL=numeric(), upper.CL=numeric())
+
+# Loop for extracting all estimates
+for(i in c(1:5)){ # Cycling through models
+  m_est <- data.frame(get(Model_vec[i]))
+  mALL5_estimates <- rbind(mALL5_estimates, data.frame(Factor=Factor_vec[i],
+                                                 Level=m_est[,1],
+                                                 Effect=m_est[,2],
+                                                 SE=m_est[,3],
+                                                 df=m_est[,4],
+                                                 lower.CL=m_est[,5],
+                                                 upper.CL=m_est[,6]))
+}
+
+
+mALL5_est_pHFe$Level <- paste(mALL5_est_pHFe$Fertiliser, ":", mALL5_est_pHFe$pH_cat)
+
+
+# Add the interaction
+mALL5_estimates <- rbind(mALL5_estimates, data.frame(Factor="Fertiliser:Soil pH",
+                                                 Level=filter(mALL5_est_pHFe, contrast==".")$Level,
+                                                 Effect=filter(mALL5_est_pHFe, contrast==".")$emmean,
+                                                 SE=filter(mALL5_est_pHFe, contrast==".")$SE,
+                                                 df=filter(mALL5_est_pHFe, contrast==".")$df,
+                                                 lower.CL=filter(mALL5_est_pHFe, contrast==".")$lower.CL,
+                                                 upper.CL=filter(mALL5_est_pHFe, contrast==".")$upper.CL))
+
+mALL5_estimates
+
+
+```
+
+
+### Model A2_Base model, pH, and Clay
+
+A knowledge of air temperature means having access to data concerning the date, time and location of fertilizer applications. If these data are not available, a model that omits this variable but includes the clay content of the soil could be advantageous, since the clay content will often be known.
+
+```{r include=TRUE, echo=FALSE}
+
+NH3predict_mALL2 <- NH3predict[which(is.na(NH3predict$pH_cat)==FALSE & is.na(NH3predict$Clay)==FALSE),]
+
+mALLnoTemp_lmer <- lmer(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Fertiliser + Application + Method + Place +                     pH_cat + Fertiliser:pH_cat + Clay + (1|Ref),
+                   weights=Weight,
+                   control=lmerControl(optimizer="bobyqa"),
+                   data=NH3predict_mALL2)
+anova(mALLnoTemp_lmer)
+summary(mALLnoTemp_lmer)
+#
+# R-squared
+r.squaredGLMM(mALLnoTemp_lmer)
+
+```
+
+\normalsize
+
+Model A2 pH explains `r round(r.squaredGLMM(mALLnoTemp_lmer)[2]*100, 2)` % of the variation in the data (conditional R2), with the fixed effects explaining `r round(r.squaredGLMM(mALLnoTemp_lmer)[1]*100, 2)` % (marginal R2). Total observations = `r length(NH3predict_mALL2$NH3loss)`
+
+### Model A3_Base model, pH and temperature
+
+```{r include=TRUE, echo=FALSE}
+
+
+NH3predict_mALL4 <- NH3predict[which(is.na(NH3predict$pH_cat)==FALSE &  is.na(NH3predict$AirTemperature)==FALSE),]
+
+mALL4_lmer <- lmer(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Fertiliser + Application + Method + Place +  pH_cat + Fertiliser:pH_cat + AirTemperature +(1|Ref),
+                   weights=Weight,
+                   control=lmerControl(optimizer="bobyqa"),
+                   data=NH3predict_mALL4)
+anova(mALL4_lmer)
+summary(mALL4_lmer )
+
+#
+# R-squared
+r.squaredGLMM(mALL4_lmer )
+
+```
+
+Total observations = `r length(NH3predict_mALL4$NH3loss)`
+
+Model A3 explains `r round(r.squaredGLMM(mALL4_lmer)[2]*100, 2)` % of the variation in the data (conditional R2), with the fixed effects explaining `r round(r.squaredGLMM(mALL4_lmer)[1]*100, 2)` % (marginal R2). The R2-values for linear mixed effects model were calculated according to Nagakawa & Schielzeth (2013).
+
+### Model Base model, pH and temperature (Lab only)
+
+```{r include=TRUE, echo=FALSE}
+
+
+NH3predict_mALL4b <- NH3predict_mALL4[which(NH3predict_mALL4$Place=="Lab" & is.na(NH3predict_mALL4$WaterPerDay)==TRUE),]
+
+mALL4b_lmer <- lmer(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Fertiliser + Application + Method + pH_cat + Fertiliser:pH_cat + AirTemperature +(1|Ref),
+                   weights=Weight,
+                   control=lmerControl(optimizer="bobyqa"),
+                   data=NH3predict_mALL4b)
+anova(mALL4b_lmer)
+summary(mALL4b_lmer )
+
+
+```
+### Model A4_Base variables, pH, clay, and temperature
+
+```{r include=TRUE, echo=FALSE}
+#
+# Remove NA's from the dataset
+NH3predict_mALL <- NH3predict[which(is.na(NH3predict$pH_cat)==FALSE & is.na(NH3predict$Clay)==FALSE & is.na(NH3predict$AirTemperature)==FALSE),]
+
+```
+
+```{r include=TRUE, echo=TRUE}
+
+mALL_lmer <- lmer(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Fertiliser + Application + Method + Place + 
+                    pH_cat + Fertiliser:pH_cat + 
+                    Clay + AirTemperature +
+                    (1|Ref),
+                   weights=Weight,
+                   control=lmerControl(optimizer="bobyqa"),
+                   data=NH3predict_mALL)
+```
+
+Total observations = `r length(NH3predict_mALL$NH3loss)`
+
+```{r include=TRUE, echo=FALSE}
+
+# Model assumptions
+par(mfrow=c(1,3))
+qqnorm(resid(mALL_lmer))
+qqline(resid(mALL_lmer))
+plot(fitted(mALL_lmer), NH3predict_mALL$Weight*resid(mALL_lmer))
+abline(h=0)
+hist(resid(mALL_lmer))
+par(mfrow=c(1,1))
+
+
+# Variance inflation 
+#vif(mALL_lmer)
+
+# Autocorrelation
+#acf(resid(mALL_lmer), type="correlation")
+
+```
+
+```{r include=TRUE, echo=FALSE}
+
+anova(mALL_lmer)
+summary(mALL_lmer)
+
+#
+# R squared
+r.squaredGLMM(mALL_lmer)
+
+```
+
+\normalsize
+
+Model A4 explains `r round(r.squaredGLMM(mALL_lmer)[2]*100, 2)` % of the variation in the data (conditional R2), with the fixed effects explaining `r round(r.squaredGLMM(mALL_lmer)[1]*100, 2)` % (marginal R2).
+
+```{r include=TRUE, echo=FALSE, warning=FALSE, message=FALSE}
+#
+##### 
+# Estimates for each main effect
+
+
+#
+# Fertiliser
+
+# Effect sizes
+at <- list("Application"="Broadcast", "Method"="Micromet", "Place"="Outdoor", "pH_cat"="normal")
+mALL_est_F <- emmeans(mALL_lmer, ~ Fertiliser, at=at)
+mALL_est_F  <- data.frame(mALL_est_F)
+
+mALL_est_F$emmean <- as.numeric(as.character(mALL_est_F$emmean))
+mALL_est_F$emmean <- inv_signed_cube_root(mALL_est_F$emmean)
+mALL_est_F$lower.CL <- inv_signed_cube_root(mALL_est_F$lower.CL)
+mALL_est_F$upper.CL <- inv_signed_cube_root(mALL_est_F$upper.CL)
+
+
+#
+# Application
+
+# Effect sizes
+at <- list("Fertiliser"="urea+", "Method"="Micromet", "Place"="Outdoor", "pH_cat"="normal")
+mALL_est_A <- emmeans(mALL_lmer, ~ Application, at=at)
+mALL_est_A <- data.frame(mALL_est_A)
+
+mALL_est_A$emmean <- as.numeric(as.character(mALL_est_A$emmean))
+mALL_est_A$emmean <- inv_signed_cube_root(mALL_est_A$emmean)
+mALL_est_A$lower.CL <- inv_signed_cube_root(mALL_est_A$lower.CL)
+mALL_est_A$upper.CL <- inv_signed_cube_root(mALL_est_A$upper.CL)
+
+
+#
+# Method
+
+# Effect sizes
+at <- list("Fertiliser"="urea+", "Application"="Broadcast", "Place"="Outdoor", "pH_cat"="normal")
+mALL_est_M <- emmeans(mALL_lmer, ~ Method, at=at)
+mALL_est_M <- data.frame(mALL_est_M)
+
+mALL_est_M$emmean <- as.numeric(as.character(mALL_est_M$emmean))
+mALL_est_M$emmean <- inv_signed_cube_root(mALL_est_M$emmean)
+mALL_est_M$lower.CL <- inv_signed_cube_root(mALL_est_M$lower.CL)
+mALL_est_M$upper.CL <- inv_signed_cube_root(mALL_est_M$upper.CL)
+
+
+#
+# Place
+
+# Effect size
+at <- list("Fertiliser"="urea+", "Application"="Broadcast", "Method"="Micromet", "pH_cat"="normal")
+mALL_est_P <- emmeans(mALL_lmer, ~ Place, at=at)
+mALL_est_P <- data.frame(mALL_est_P)
+
+mALL_est_P$emmean <- as.numeric(as.character(mALL_est_P$emmean))
+mALL_est_P$emmean <- inv_signed_cube_root(mALL_est_P$emmean)
+mALL_est_P$lower.CL <- inv_signed_cube_root(mALL_est_P$lower.CL)
+mALL_est_P$upper.CL <- inv_signed_cube_root(mALL_est_P$upper.CL)
+
+
+#
+# Soil pH
+
+# Effect size
+at <- list("Fertiliser"="urea+", "Application"="Broadcast", "Method"="Micromet", "Place"="Outdoor")
+mALL_est_pH <- emmeans(mALL_lmer, ~ pH_cat, at=at)
+mALL_est_pH <- data.frame(mALL_est_pH)
+
+mALL_est_pH$emmean <- as.numeric(as.character(mALL_est_pH$emmean))
+mALL_est_pH$emmean <- inv_signed_cube_root(mALL_est_pH$emmean)
+mALL_est_pH$lower.CL <- inv_signed_cube_root(mALL_est_pH$lower.CL)
+mALL_est_pH$upper.CL <- inv_signed_cube_root(mALL_est_pH$upper.CL)
+
+#
+# Interaction
+
+# Effect size
+at <- list("Application"="Broadcast", "Method"="Micromet", "Place"="Outdoor")
+mALL_est_pHFe <- emmeans(mALL_lmer, pairwise ~ pH_cat | Fertiliser, at=at)
+mALL_est_pHFe <- data.frame(mALL_est_pHFe)
+
+mALL_est_pHFe$emmean <- as.numeric(as.character(mALL_est_pHFe$emmean))
+mALL_est_pHFe$emmean <- inv_signed_cube_root(mALL_est_pHFe$emmean)
+mALL_est_pHFe$lower.CL <- inv_signed_cube_root(mALL_est_pHFe$lower.CL)
+mALL_est_pHFe$upper.CL <- inv_signed_cube_root(mALL_est_pHFe$upper.CL)
+
+
+#
+
+## 
+# Collating a dataframe with all effect sizes
+
+# Vectors for emmeans-objects and fectors
+Model_vec <- c("mALL_est_F", "mALL_est_A", "mALL_est_M", "mALL_est_P", "mALL_est_pH")
+Factor_vec <- c("Fertiliser", "Application", "Method", "Place", "Soil pH")
+
+# Creating an empty dataframe
+mALL_estimates <- data.frame(Factor=factor(), Level=factor(), Effect=numeric(), SE=numeric(), df=numeric(), lower.CL=numeric(), upper.CL=numeric())
+
+# Loop for extracting all estimates
+for(i in c(1:5)){ # Cycling through models
+  m_est <- data.frame(get(Model_vec[i]))
+  mALL_estimates <- rbind(mALL_estimates, data.frame(Factor=Factor_vec[i],
+                                                 Level=m_est[,1],
+                                                 Effect=m_est[,2],
+                                                 SE=m_est[,3],
+                                                 df=m_est[,4],
+                                                 lower.CL=m_est[,5],
+                                                 upper.CL=m_est[,6]))
+}
+
+
+mALL_est_pHFe$Level <- paste(mALL_est_pHFe$Fertiliser, ":", mALL_est_pHFe$pH_cat)
+
+
+# Add the interaction
+mALL_estimates <- rbind(mALL_estimates, data.frame(Factor="Fertiliser:Soil pH",
+                                                 Level=filter(mALL_est_pHFe, contrast==".")$Level,
+                                                 Effect=filter(mALL_est_pHFe, contrast==".")$emmean,
+                                                 SE=filter(mALL_est_pHFe, contrast==".")$SE,
+                                                 df=filter(mALL_est_pHFe, contrast==".")$df,
+                                                 lower.CL=filter(mALL_est_pHFe, contrast==".")$lower.CL,
+                                                 upper.CL=filter(mALL_est_pHFe, contrast==".")$upper.CL))
+
+mALL_estimates
+
+
+```
+
+The same effect sizes (and their 95% confidence interval) are shown below:
+
+```{r include=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Figure
+ggplot(mALL_estimates, aes(y=Level, x=Effect, xmin=lower.CL, xmax=upper.CL, colour=Factor)) +
+  theme_classic(base_size = 11) +
+  facet_grid(Factor ~ ., scales = "free_y", space = "free_y") +
+  geom_point(size=3) + 
+  geom_errorbarh(height=.1)  +
+  geom_vline(xintercept=0, colour="black", linetype="dashed") +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x="Effect Size (NH3 loss (%))", y="") +
+  theme(legend.position = "none")
+
+
+```
+
+### Model A5
+
+```{r include=TRUE, echo=FALSE}
+
+NH3predict_mALL3 <- NH3predict[which(is.na(NH3predict$pH_cat)==FALSE),]
+NH3predict_mALL3 <- NH3predict_mALL3 %>% drop_na(c(AirTemperature, Rain.mean))
+mALLTemp_Rain_lmer <- lmer(sign(NH3loss) * abs(NH3loss) ^ (1/3) ~ Fertiliser + Application + Method +                      pH_cat + Fertiliser:pH_cat +  AirTemperature + Rain.mean + AirTemperature *             Rain.mean +(1|Ref),
+                   weights=Weight,
+                   control=lmerControl(optimizer="bobyqa"),
+                   data=NH3predict_mALL3)
+anova(mALLTemp_Rain_lmer)
+summary(mALLTemp_Rain_lmer)
+```
+
+
+# References
+
+Astivia, Oscar L. Olvera and Zumbo, Bruno D. (2019) "Heteroskedasticity in Multiple Regression Analysis: What it is, How to Detect it and How to Solve it with Applications in R and SPSS," Practical Assessment, Research, and Evaluation: Vol. 24 , Article 1. DOI: <https://doi.org/10.7275/q5xr-fr95>
+
+Douglas Bates, Martin Maechler, Ben Bolker, Steve Walker (2015). Fitting Linear Mixed-Effects Models Using lme4. Journal of Statistical Software, 67(1), 1-48. [https://doi:10.18637/jss.v067.i01](https://doi:10.18637/jss.v067.i01){.uri}
+
+Nakagawa, S, Schielzeth, H. (2013). A general and simple method for obtaining R\^2 from Generalized Linear Mixed-effects Models. Methods in Ecology and Evolution 4: 133-142. <https://doi.org/10.1111/j.2041-210x.2012.00261.x>
