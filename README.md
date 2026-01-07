@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/1129054625.svg)](https://doi.org/10.5281/zenodo.18174399)
+
 # N_Fert_NH3_Tier3_EF
 
 All code presented as an R-markdown file as well as a corresponding HTML document. The models presented for all data, outdoor only data and only using data measured with Micromet method.
